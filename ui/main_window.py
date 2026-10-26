@@ -132,17 +132,23 @@ class MainWindow(QMainWindow):
         self._power_button.setFixedSize(40, 40)
         self._power_button.setText("")
         self._power_button.setCheckable(True)
+        self._power_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._power_button.setStyleSheet("""
             QPushButton {
                 background-color: #333;
                 border: 2px solid #555;
                 border-radius: 20px;
             }
+            QPushButton:hover {
+                background-color: #444;
+                border-color: #2ecc71;
+            }
             QPushButton:checked {
                 background-color: #2ecc71;
                 border-color: #2ecc71;
             }
         """)
+        self._power_button.raise_()
         header_layout.addWidget(self._power_button)
         
         parent_layout.addWidget(header)

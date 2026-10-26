@@ -9,7 +9,7 @@ class AudioEngine:
     DEFAULT_SAMPLE_RATE = 44100
     DEFAULT_BLOCKSIZE = 512
     
-    def __init__(self, sample_rate: int = 44100, blocksize: int = 512):
+    def __init__(self, sample_rate: int = 44100, blocksize: int = 1024):
         self.sample_rate = sample_rate
         self.blocksize = blocksize
         self._stream: Optional[sd.Stream] = None
@@ -43,32 +43,58 @@ class AudioEngine:
             devices = sd.query_devices()
             if devices is None:
                 return {'input': [], 'output': []}
-            if isinstance(devices, dict):
-                devices = [devices]
             
-            input_devices = []
-            output_devices = []
+            input_map = {}
+            output_map = {}
+            
+            # Keywords to ignore (Useless or cryptic system devices)
+            ignore_keywords = [
+                'mapper', 'primary', 'capture driver', 'stereo mix', 
+                '@system32', 'input ()', 'hands-free hf', 'steam',
+                'nvidia output', 'amd capture', 'virtual'
+            ]
             
             for i, device in enumerate(devices):
+                full_name = device.get('name', '').strip()
+                name_lower = full_name.lower()
+                
+                # Filter out junk/cryptic devices
+                if not full_name or any(k in name_lower for k in ignore_keywords):
+                    continue
+                
+                # Basic cleaning: remove extra spaces or empty parens
+                clean_name = full_name.split(' (')[0] if ' (' in full_name else full_name
+                
+                host_api = sd.query_hostapis(device.get('hostapi', 0)).get('name', '')
+                is_wasapi = "WASAPI" in host_api.upper()
+                
                 device_info = {
                     'index': i,
-                    'name': device.get('name', f'Device {i}'),
+                    'name': clean_name, # Use cleaner name for display
+                    'full_name': full_name, # Keep full for internal use if needed
                     'max_input_channels': device.get('max_input_channels', 0),
                     'max_output_channels': device.get('max_output_channels', 0),
-                    'default_samplerate': device.get('default_samplerate', self.DEFAULT_SAMPLE_RATE)
+                    'host_api': host_api
                 }
                 
+                # Input Filtering
                 if device_info['max_input_channels'] > 0:
-                    input_devices.append(device_info)
+                    # Preference: Only show Hardware-like names, prioritize WASAPI
+                    if clean_name not in input_map or is_wasapi:
+                        input_map[clean_name] = device_info
                 
+                # Output Filtering
                 if device_info['max_output_channels'] > 0:
-                    output_devices.append(device_info)
+                    if clean_name not in output_map or is_wasapi:
+                        output_map[clean_name] = device_info
             
             return {
-                'input': input_devices,
-                'output': output_devices
+                'input': sorted(input_map.values(), key=lambda x: x['name']),
+                'output': sorted(output_map.values(), key=lambda x: x['name'])
             }
-        except Exception:
+        except Exception as e:
+            import debug_logger
+            debug_logger.log(f"Error listing devices: {e}")
             return {'input': [], 'output': []}
     
     def set_blocksize(self, blocksize: int) -> None:
@@ -92,6 +118,9 @@ class AudioEngine:
         self._latency_ms = (self.blocksize / self.sample_rate) * 1000
         
         silent_buffer = np.zeros((self.blocksize, 1), dtype=np.float32)
+        
+        import debug_logger
+        debug_logger.log(f"Configuring sd.Stream: InDevice={input_device_index}, OutDevice={output_device_index}, Rate={self.sample_rate}, Block={self.blocksize}, Channels=(1,1)")
         
         def audio_callback(indata, outputdata, frames, time_info, status):
             nonlocal silent_buffer

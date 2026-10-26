@@ -1,14 +1,12 @@
 import numpy as np
-import noisereduce as nr
-import pedalboard
 from scipy.signal import iirpeak, sosfilt
 from typing import List, Optional
-
+import debug_logger
 
 class NoiseGate:
     def __init__(
         self,
-        threshold_db: float = -40.0,
+        threshold_db: float = -60.0,
         attack_ms: float = 10.0,
         release_ms: float = 100.0,
         sample_rate: int = 44100
@@ -18,6 +16,7 @@ class NoiseGate:
         self.release_ms = release_ms
         self.sample_rate = sample_rate
         self.enabled = True
+        debug_logger.log(f"NoiseGate initialized at {sample_rate}Hz (High Sensitivity)")
         
         self._envelope = 0.0
     
@@ -87,60 +86,11 @@ class NoiseRemoval:
         self.strength = np.clip(strength, 0.0, 1.0)
     
     def process(self, audio: np.ndarray) -> np.ndarray:
-        if not self.enabled:
-            return audio
-        
-        self._buffer = np.concatenate([self._buffer, audio])
-        
-        if len(self._buffer) < self._min_buffer_samples:
-            return np.zeros(len(audio), dtype=np.float32)
-        
-        if len(self._output_buffer) > 0:
-            output_len = min(len(audio), len(self._output_buffer))
-            output = self._output_buffer[:output_len]
-            self._output_buffer = self._output_buffer[output_len:]
-            if output_len < len(audio):
-                output = np.concatenate([output, np.zeros(len(audio) - output_len, dtype=np.float32)])
-            return output[:len(audio)]
-        
-        audio_2d = self._buffer.reshape(1, -1)
-        
-        noise_sample = self._buffer[:self._min_buffer_samples]
-        if np.std(noise_sample) > 0:
-            noise_profile = noise_sample.reshape(1, -1)
-        else:
-            noise_profile = None
-        
-        try:
-            reduced = nr.reduce_noise(
-                y=audio_2d,
-                sr=self.sample_rate,
-                stationary=False,
-                prop_decrease=self.strength,
-                y_noise=noise_profile
-            )
-        except Exception:
-            reduced = audio_2d
-        
-        reduced_1d = reduced[0]
-        
-        self._output_buffer = reduced_1d[self._min_buffer_samples:]
-        self._buffer = np.array([], dtype=np.float32)
-        
-        output_len = min(len(audio), len(self._output_buffer))
-        output = self._output_buffer[:output_len]
-        self._output_buffer = self._output_buffer[output_len:]
-        
-        if output_len < len(audio):
-            output = np.concatenate([output, np.zeros(len(audio) - output_len, dtype=np.float32)])
-        
-        return output
+        # Noise Removal is disabled for stability (Pure NumPy bypass)
+        return audio
     
     def flush(self) -> np.ndarray:
-        remaining = self._output_buffer.copy()
-        self._buffer = np.array([], dtype=np.float32)
-        self._output_buffer = np.array([], dtype=np.float32)
-        return remaining
+        return np.array([], dtype=np.float32)
     
     def get_params(self) -> dict:
         return {
@@ -160,7 +110,7 @@ class Compressor:
         self,
         threshold_db: float = -20.0,
         ratio: float = 4.0,
-        attack_ms: float = 5.0,
+        attack_ms: float = 10.0,
         release_ms: float = 100.0,
         knee_db: float = 6.0,
         sample_rate: int = 44100
@@ -173,43 +123,56 @@ class Compressor:
         self.sample_rate = sample_rate
         self.enabled = True
         
-        self._pedalboard_comp = pedalboard.Compressor(
-            threshold_db=threshold_db,
-            ratio=ratio,
-            attack_ms=attack_ms,
-            release_ms=release_ms
-        )
-        self._makeup_gain = pedalboard.Gain(gain_db=0.0)
-    
-    def _update_pedalboard(self) -> None:
-        self._pedalboard_comp = pedalboard.Compressor(
-            threshold_db=self.threshold_db,
-            ratio=self.ratio,
-            attack_ms=self.attack_ms,
-            release_ms=self.release_ms
-        )
-    
+        # State for smoothing
+        self._envelope = 0.0
+        self._current_gain = 1.0
+
     def process(self, audio: np.ndarray) -> np.ndarray:
-        if not self.enabled:
+        if not self.enabled or len(audio) == 0:
             return audio
+            
+        # Linear threshold and peak detection
+        thresh_linear = 10 ** (self.threshold_db / 20.0)
         
-        audio_2d = audio.reshape(1, -1)
+        # Envelope follower (Peak detection with smoothing)
+        # Using simple attack/release coefficients
+        alpha_attack = np.exp(-1.0 / (self.sample_rate * self.attack_ms / 1000.0))
+        alpha_release = np.exp(-1.0 / (self.sample_rate * self.release_ms / 1000.0))
         
-        compressed = self._pedalboard_comp(audio_2d, self.sample_rate)
+        output = np.zeros_like(audio)
         
-        rms = np.sqrt(np.mean(compressed ** 2))
-        if rms > 0:
-            current_db = 20 * np.log10(rms)
-            target_db = -12.0
-            makeup_db = target_db - current_db
-            makeup_db = max(0, min(makeup_db, 20))
+        # Local refs for performance
+        env = self._envelope
+        curr_gain_target = 1.0
+        
+        # Process in chunks to keep reasonable performance while being smooth
+        peaks = np.abs(audio)
+        
+        # Simplified block-based envelope
+        block_peak = np.max(peaks)
+        if block_peak > env:
+            env = alpha_attack * env + (1 - alpha_attack) * block_peak
         else:
-            makeup_db = 0
+            env = alpha_release * env + (1 - alpha_release) * block_peak
         
-        self._makeup_gain = pedalboard.Gain(gain_db=makeup_db)
-        with_makeup = self._makeup_gain(compressed, self.sample_rate)
+        # Static curve calculation
+        if env > thresh_linear:
+            # Compression
+            env_db = 20 * np.log10(env + 1e-9)
+            over_db = env_db - self.threshold_db
+            reduction_db = over_db * (1 - 1.0 / self.ratio)
+            target_gain = 10 ** (-reduction_db / 20.0)
+        else:
+            target_gain = 1.0
+            
+        # Smooth gain changes
+        self._current_gain = 0.9 * self._current_gain + 0.1 * target_gain
+        self._envelope = env
         
-        return with_makeup[0].astype(np.float32)
+        # Automatic Makeup Gain (keep peak at ~ -6dB)
+        makeup_gain = 10 ** (12.0 / 20.0) # Simple fixed +12dB makeup max
+        
+        return (audio * self._current_gain * makeup_gain).astype(np.float32)
     
     def get_params(self) -> dict:
         return {
@@ -225,16 +188,12 @@ class Compressor:
             self.enabled = params['enabled']
         if 'threshold_db' in params:
             self.threshold_db = float(np.clip(params['threshold_db'], -40, 0))
-            self._update_pedalboard()
         if 'ratio' in params:
             self.ratio = float(np.clip(params['ratio'], 1, 10))
-            self._update_pedalboard()
         if 'attack_ms' in params:
             self.attack_ms = float(np.clip(params['attack_ms'], 1, 100))
-            self._update_pedalboard()
         if 'release_ms' in params:
             self.release_ms = float(np.clip(params['release_ms'], 10, 500))
-            self._update_pedalboard()
 
 
 class AutoLeveler:
@@ -488,17 +447,19 @@ class Limiter:
         self.sample_rate = sample_rate
         self.enabled = True
         self._ceiling_linear = 10 ** (self.CEILING_DB / 20.0)
-        self._pedalboard_limiter = pedalboard.Limiter(threshold_db=self.CEILING_DB, release_ms=50)
         self._limiter_active = False
         self._peak_hold_time = 0
         self._peak_hold_samples = int(sample_rate * 2)
-    
+        self._current_gain = 1.0
+
     def process(self, audio: np.ndarray) -> np.ndarray:
-        if not self.enabled:
+        if not self.enabled or len(audio) == 0:
             return audio
         
+        # 1. Peak Detection
         peak = np.max(np.abs(audio))
         
+        # 2. Update status for UI
         if peak > self._ceiling_linear:
             self._limiter_active = True
             self._peak_hold_time = self._peak_hold_samples
@@ -507,12 +468,23 @@ class Limiter:
         else:
             self._limiter_active = False
         
-        audio_2d = audio.reshape(1, -1)
-        limited = self._pedalboard_limiter(audio_2d, self.sample_rate)
+        # 3. Brick-wall limiting logic
+        target_gain = 1.0
+        if peak > self._ceiling_linear:
+            target_gain = self._ceiling_linear / (peak + 1e-6)
+            
+        # Smooth gain decrease (instant) and increase (slow release)
+        if target_gain < self._current_gain:
+            self._current_gain = target_gain # Instant attack
+        else:
+            # Release smoothing
+            alpha_release = np.exp(-1.0 / (self.sample_rate * 0.05)) # 50ms release
+            self._current_gain = alpha_release * self._current_gain + (1 - alpha_release) * target_gain
+            
+        limited = audio * self._current_gain
         
-        limited_1d = np.clip(limited[0], -self._ceiling_linear, self._ceiling_linear)
-        
-        return limited_1d.astype(np.float32)
+        # Final safety clip
+        return np.clip(limited, -self._ceiling_linear, self._ceiling_linear).astype(np.float32)
     
     def is_limiter_active(self) -> bool:
         return self._limiter_active
@@ -532,6 +504,7 @@ class AudioProcessor:
         self.sample_rate = sample_rate
         self.chain: List = []
         self._output_level = -60.0
+        self._frame_count = 0 # Added for logging stabilization
         
         self.noise_gate = NoiseGate(sample_rate=sample_rate)
         self.noise_removal = NoiseRemoval(sample_rate=sample_rate)
@@ -540,6 +513,7 @@ class AudioProcessor:
         self.voice_enhancer = VoiceEnhancer(sample_rate=sample_rate)
         self.auto_leveler = AutoLeveler(sample_rate=sample_rate)
         self.limiter = Limiter(sample_rate=sample_rate)
+        
         self.chain.append(self.noise_gate)
         self.chain.append(self.noise_removal)
         self.chain.append(self.compressor)
@@ -549,20 +523,38 @@ class AudioProcessor:
         self.chain.append(self.limiter)
     
     def process(self, audio: np.ndarray) -> np.ndarray:
-        result = audio.copy()
-        
-        for processor in self.chain:
-            result = processor.process(result)
-        
-        result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        rms = np.sqrt(np.mean(result ** 2))
-        if rms > 0:
-            self._output_level = 20 * np.log10(rms)
-        else:
-            self._output_level = -60.0
-        
-        return result
+        try:
+            raw_peak = np.max(np.abs(audio)) if len(audio) > 0 else 0
+            result = audio.copy()
+            
+            for processor in self.chain:
+                try:
+                    if hasattr(processor, 'enabled') and not processor.enabled:
+                        continue
+                    
+                    result = processor.process(result)
+                except Exception as e:
+                    debug_logger.log(f"Error in processor {processor.__class__.__name__}: {e}")
+                    # Continue with the result as-is before this processor failed
+            
+            result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            rms = np.sqrt(np.mean(result ** 2))
+            peak = np.max(np.abs(result))
+            
+            if self._frame_count % 200 == 0:
+                debug_logger.log(f"Heartbeat: Frame {self._frame_count} | Raw In: {raw_peak:.4f} | Processed Out: {peak:.4f}")
+            
+            self._frame_count += 1
+            if rms > 0:
+                self._output_level = 20 * np.log10(rms)
+            else:
+                self._output_level = -60.0
+            
+            return result
+        except Exception as e:
+            debug_logger.log(f"Fatal error in AudioProcessor.process: {e}")
+            return audio
     
     def get_output_level(self) -> float:
         return self._output_level

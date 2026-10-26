@@ -1,0 +1,89 @@
+[2026-04-16 01:56:07.451] App initializing...
+[2026-04-16 01:56:07.476] NoiseGate initialized at 44100Hz (High Sensitivity)
+[2026-04-16 01:56:07.588] Setup connections
+[2026-04-16 01:56:07.590] Load settings
+[2026-04-16 01:56:07.595] Setup control connections
+[2026-04-16 01:56:07.597] Showing window
+[2026-04-16 01:56:07.660] Init complete
+[2026-04-16 01:56:07.662] App starting exec loop
+[2026-04-16 01:56:25.878] Attempting to start streaming...
+[2026-04-16 01:56:25.891] Opening: [Microphone (Realtek(R) Audio)] -> [Headphones (Realtek(R) Audio)]
+[2026-04-16 01:56:25.892] Configuring sd.Stream: InDevice=16, OutDevice=14, Rate=44100, Block=1024, Channels=(1,1)
+[2026-04-16 01:56:25.898] Failed to start stream: Error opening Stream: Invalid sample rate [PaErrorCode -9997]
+Traceback (most recent call last):
+  File "D:\PROJECT_APP\voiceforge\main.py", line 263, in _start_streaming
+    self.audio_engine.start(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        input_idx,
+        ^^^^^^^^^^
+        output_idx,
+        ^^^^^^^^^^^
+        self._process_audio
+        ^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\PROJECT_APP\voiceforge\core\audio_engine.py", line 170, in start
+    stream = sd.Stream(
+        samplerate=self.sample_rate,
+    ...<4 lines>...
+        callback=audio_callback
+    )
+  File "C:\Users\ZENBOOK\AppData\Roaming\Python\Python313\site-packages\sounddevice.py", line 1800, in __init__
+    _StreamBase.__init__(self, kind='duplex', wrap_callback='array',
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                         **_remove_self(locals()))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ZENBOOK\AppData\Roaming\Python\Python313\site-packages\sounddevice.py", line 898, in __init__
+    _check(_lib.Pa_OpenStream(self._ptr, iparameters, oparameters,
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              samplerate, blocksize, stream_flags,
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              callback_ptr, userdata),
+                              ^^^^^^^^^^^^^^^^^^^^^^^^
+           f'Error opening {self.__class__.__name__}')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ZENBOOK\AppData\Roaming\Python\Python313\site-packages\sounddevice.py", line 2747, in _check
+    raise PortAudioError(errormsg, err)
+sounddevice.PortAudioError: Error opening Stream: Invalid sample rate [PaErrorCode -9997]
+
+[2026-04-16 01:56:30.516] Attempting to start streaming...
+[2026-04-16 01:56:30.529] Opening: [Microphone Array (AMD Audio Device)] -> [Headphones (Realtek(R) Audio)]
+[2026-04-16 01:56:30.530] Configuring sd.Stream: InDevice=15, OutDevice=14, Rate=44100, Block=1024, Channels=(1,1)
+[2026-04-16 01:56:30.540] Failed to start stream: Error opening Stream: Invalid sample rate [PaErrorCode -9997]
+Traceback (most recent call last):
+  File "D:\PROJECT_APP\voiceforge\main.py", line 263, in _start_streaming
+    self.audio_engine.start(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        input_idx,
+        ^^^^^^^^^^
+        output_idx,
+        ^^^^^^^^^^^
+        self._process_audio
+        ^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\PROJECT_APP\voiceforge\core\audio_engine.py", line 170, in start
+    stream = sd.Stream(
+        samplerate=self.sample_rate,
+    ...<4 lines>...
+        callback=audio_callback
+    )
+  File "C:\Users\ZENBOOK\AppData\Roaming\Python\Python313\site-packages\sounddevice.py", line 1800, in __init__
+    _StreamBase.__init__(self, kind='duplex', wrap_callback='array',
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                         **_remove_self(locals()))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ZENBOOK\AppData\Roaming\Python\Python313\site-packages\sounddevice.py", line 898, in __init__
+    _check(_lib.Pa_OpenStream(self._ptr, iparameters, oparameters,
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              samplerate, blocksize, stream_flags,
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              callback_ptr, userdata),
+                              ^^^^^^^^^^^^^^^^^^^^^^^^
+           f'Error opening {self.__class__.__name__}')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ZENBOOK\AppData\Roaming\Python\Python313\site-packages\sounddevice.py", line 2747, in _check
+    raise PortAudioError(errormsg, err)
+sounddevice.PortAudioError: Error opening Stream: Invalid sample rate [PaErrorCode -9997]
+
+[2026-04-16 01:56:32.644] App exec loop finished with code: 0

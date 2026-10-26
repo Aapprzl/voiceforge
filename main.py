@@ -1,36 +1,78 @@
+import os
 import sys
+
+# Remove all graphics overrides to let the OS handle rendering
+# Prevent math library threading conflicts in audio thread
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 import json
 import threading
-import numpy as np
 import psutil
+import numpy as np
+from collections import deque
+
+# Prevent math library threading conflicts in audio thread
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 from PyQt6.QtWidgets import QApplication, QMessageBox
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QObject, pyqtSignal
 from ui.main_window import MainWindow
 from core.audio_engine import AudioEngine
 from core.processor import AudioProcessor
 from presets.preset_manager import PresetManager
+import debug_logger
 
+class AudioSignals(QObject):
+    error_occurred = pyqtSignal(str)
 
 class VoiceForgeApp:
     def __init__(self):
+        debug_logger.clear_log()
+        debug_logger.log("App initializing...")
+        
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("VoiceForge")
         self.app.setStyle("Fusion")
         
+        self.signals = AudioSignals()
+        
         self.audio_engine = AudioEngine()
         self.processor = AudioProcessor()
         self.preset_manager = PresetManager()
+        self._frame_count = 0
+        self._visual_queue = deque(maxlen=5)
         
         self.window = MainWindow(audio_engine=self.audio_engine)
         self.window.set_preset_manager(self.preset_manager)
         self.window.set_processor(self.processor)
         
+        # Connect audio signals to UI
+        self.signals.error_occurred.connect(self.window.set_error)
+        
+        self._setup_cpu_monitor() # Re-enabled CPU monitor
+        
+        debug_logger.log("Setup connections")
         self._setup_connections()
+        debug_logger.log("Load settings")
         self._load_settings()
+        debug_logger.log("Setup control connections")
         self._setup_control_connections()
         self._setup_cpu_monitor()
         
+        # Setup visualization polling (Safest way to pass high freq data on Windows)
+        self._viz_timer = QTimer()
+        self._viz_timer.timeout.connect(self._update_visualizers)
+        # Delay start to ensure window is mapped
+        QTimer.singleShot(1000, lambda: self._viz_timer.start(30))
+        
+        debug_logger.log("Showing window")
         self.window.show()
+        debug_logger.log("Init complete")
     
     def _setup_connections(self):
         self.window.power_toggled.connect(self._on_power_toggled)
@@ -193,41 +235,48 @@ class VoiceForgeApp:
         self.preset_manager.set_active_preset(preset_name)
     
     def _start_streaming(self):
+        debug_logger.log("Attempting to start streaming...")
         input_idx = self.window.get_input_combo().currentData()
         output_idx = self.window.get_output_combo().currentData()
         
         if input_idx is None or output_idx is None:
+            debug_logger.log("Error: No device selected")
             self.window.set_error("No device selected")
             self.window.set_streaming(False)
             return
         
         try:
+            # Robust lookup: Find the device by index in the official list
+            import sounddevice as sd
+            all_devices = sd.query_devices()
+            
+            input_name = "Unknown"
+            output_name = "Unknown"
+            
+            if 0 <= input_idx < len(all_devices):
+                input_name = all_devices[input_idx].get('name', 'Unknown')
+            if 0 <= output_idx < len(all_devices):
+                output_name = all_devices[output_idx].get('name', 'Unknown')
+                
+            debug_logger.log(f"Opening: [{input_name}] -> [{output_name}]")
+            
             self.audio_engine.start(
                 input_idx,
                 output_idx,
                 self._process_audio
             )
+            
+            debug_logger.log("Audio engine started successfully")
             self.window.set_streaming(True)
             self.window.start_visualizer()
-            self._device_error_count = 0
+            debug_logger.log("UI updated to streaming state")
             
-        except PermissionError as e:
-            self.window.set_error("Microphone permission denied. Check Windows Settings > Privacy > Microphone")
-            self.window.set_streaming(False)
-        except OSError as e:
-            if "Invalid device" in str(e) or "device not found" in str(e).lower():
-                self.window.set_error("Device disconnected. Please reconnect and restart.")
-            else:
-                self.window.set_error(f"Device error: {str(e)}")
-            self.window.set_streaming(False)
-            self.window._refresh_btn.click()
         except Exception as e:
-            error_msg = str(e)
-            if "permissions" in error_msg.lower() or "access" in error_msg.lower():
-                self.window.set_error("Microphone permission denied. Check Windows Settings > Privacy > Microphone")
-            else:
-                self.window.set_error(f"Error: {error_msg}")
-            self.window.set_streaming(False)
+            import traceback
+            err_msg = str(e)
+            debug_logger.log(f"Failed to start stream: {err_msg}\n{traceback.format_exc()}")
+            self.window.set_error(err_msg)
+            self.window.set_streaming(False) # This resets the power button visually
     
     def _stop_streaming(self):
         try:
@@ -239,20 +288,41 @@ class VoiceForgeApp:
     
     def _process_audio(self, audio_chunk):
         try:
+            self._frame_count += 1
+            if self._frame_count % 200 == 0:
+                debug_logger.log(f"Heartbeat: Frame {self._frame_count} processed")
+
             if audio_chunk is None or len(audio_chunk) == 0:
-                return np.zeros(512, dtype=np.float32)
+                return np.zeros(1024, dtype=np.float32)
             
             processed = self.processor.process(audio_chunk)
             
-            if processed is None or len(processed) == 0:
-                return np.zeros(len(audio_chunk), dtype=np.float32)
-            
+            # Use thread-safe queue instead of signals to prevent Access Violation
+            self._visual_queue.append(processed.copy())
+                
             return processed
             
         except Exception as e:
-            print(f"Process error: {e}")
+            debug_logger.log(f"Process error: {e}")
             return np.zeros(len(audio_chunk) if audio_chunk is not None else 512, dtype=np.float32)
-    
+
+    def _update_visualizers(self):
+        """Poll the visual queue from the UI thread (Zero-latency polling)"""
+        try:
+            viz = self.window.get_visualizer() if self.window else None
+            if not viz or not self._visual_queue:
+                return
+            
+            # Flush the queue to get the absolute LATEST frame for visual sync
+            processed_chunk = None
+            while self._visual_queue:
+                processed_chunk = self._visual_queue.popleft()
+            
+            if processed_chunk is not None:
+                viz.update_audio(processed_chunk)
+        except Exception:
+            pass
+            
     def _setup_cpu_monitor(self):
         self._cpu_timer = QTimer()
         self._cpu_timer.timeout.connect(self._update_stats)
@@ -271,10 +341,17 @@ class VoiceForgeApp:
             pass
     
     def run(self):
-        exit_code = self.app.exec()
-        self._save_settings()
-        self._stop_streaming()
-        sys.exit(exit_code)
+        """Main entry point to run the application"""
+        try:
+            debug_logger.log("App starting exec loop")
+            exit_code = self.app.exec()
+            debug_logger.log(f"App exec loop finished with code: {exit_code}")
+            self._save_settings()
+            self._stop_streaming()
+            return exit_code
+        except Exception as e:
+            debug_logger.log(f"CRITICAL APP ERROR during exec: {e}")
+            return 1
 
 
 def main():
